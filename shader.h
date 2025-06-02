@@ -3,24 +3,21 @@
 #include <string>
 #include <GL/glew.h>
 #include <glm/glm.hpp>
-#include <glm/gtc/type_ptr.hpp> // Dla glm::value_ptr
+#include <glm/gtc/type_ptr.hpp> 
 
 class Shader
 {
 public:
     GLuint ID;
 
-    Shader(); // Domyœlny konstruktor
+    Shader(); 
 
-    // Konstruktor, który od razu ³aduje shadery
     Shader(const char* vertexPath, const char* fragmentPath);
 
-    // Metoda do za³adowania shaderów (jeœli u¿yto domyœlnego konstruktora)
     bool loadFromFile(const char* vertexPath, const char* fragmentPath);
 
     void use() const;
 
-    // Metody do ustawiania uniformów
     void setBool(const std::string& name, bool value) const;
     void setInt(const std::string& name, int value) const;
     void setFloat(const std::string& name, float value) const;

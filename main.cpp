@@ -2,38 +2,56 @@
 #include <GLFW/glfw3.h>
 #include "Shader.h"
 #include "Player.h"    
-#include "Platform.h"  // U¿ywa teraz nowego Platform.h/cpp
-// Usuniêto: #include "Model.h" // Nie potrzebujemy ju¿ Model.h dla platform
-// Jeœli masz osobny plik stb_image.cpp z #define STB_IMAGE_IMPLEMENTATION,
-// to poni¿sz¹ liniê #define STB_IMAGE_IMPLEMENTATION usuñ.
-// #define STB_IMAGE_IMPLEMENTATION 
+#include "Platform.h"  
 #include "stb_image.h"          
 
 #include <vector>
+#include <deque> // Do nieskoÅ„czonego generowania platform
 #include <iostream>
 #include <string>
 #include <iomanip> 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <cstdlib> // Dla std::rand i std::srand
+#include <ctime>   // Dla std::time
 
 const unsigned int SCR_WIDTH = 1280;
 const unsigned int SCR_HEIGHT = 720;
 
 Player* player = nullptr;
-std::vector<Platform*> platforms;
-// Usuniêto: Model* buildingModel1 = nullptr; 
+// std::vector<Platform*> platforms; // Zmienione na deque
+std::deque<Platform*> platforms_deque; 
+float last_platform_x = 0.0f;       
+float last_platform_y = 0.0f; // Do Å›ledzenia wysokoÅ›ci ostatniej platformy
+const int INITIAL_PLATFORMS = 8;    // Ile platform generujemy na start
+const float PLATFORM_VIEW_DISTANCE_POSITIVE_X = 30.0f; // Jak daleko w prawo generujemy
+const float PLATFORM_REMOVAL_DISTANCE_NEGATIVE_X = -40.0f; // Jak daleko w lewo usuwamy
+
+// Parametry generowania platform
+const float MIN_PLATFORM_SPACING_X = 2.5f;
+const float MAX_PLATFORM_SPACING_X = 5.0f;
+const float MIN_PLATFORM_HEIGHT_DIFFERENCE = -3.0f;
+const float MAX_PLATFORM_HEIGHT_DIFFERENCE = 3.0f;
+const float MIN_PLATFORM_WIDTH = 1.5f;
+const float MAX_PLATFORM_WIDTH = 4.0f;
+const float MIN_PLATFORM_HEIGHT = 10.0f;
+const float MAX_PLATFORM_HEIGHT = 25.0f;
+const float BASE_PLATFORM_Y = 0.0f; // Podstawa, od ktÃ³rej liczymy wysokoÅ›Ä‡ platform
 
 float lastFrame = 0.0f;
-glm::vec3 globalLightPosition = glm::vec3(20.0f, 30.0f, 15.0f);
+glm::vec3 globalLightPosition = glm::vec3(20.0f, 50.0f, 20.0f); // ÅšwiatÅ‚o nieco wyÅ¼ej
 unsigned int skyboxVAO = 0, skyboxVBO = 0;
 unsigned int cubemapTextureID = 0;
 
 void processInput(GLFWwindow* window, float deltaTime);
-bool checkCollision(glm::vec3 pos1, glm::vec3 size1, glm::vec3 pos2, glm::vec3 size2);
+// bool checkCollision(glm::vec3 pos1, glm::vec3 size1, glm::vec3 pos2, glm::vec3 size2); // JuÅ¼ niepotrzebne w tej formie
 unsigned int loadCubemap(const std::vector<std::string>& faces);
+void gameLogicAndCollisions(float deltaTime); // Deklaracja
+void createNewPlatform(); // Deklaracja
+void managePlatforms();   // Deklaracja
 
-unsigned int loadCubemap(const std::vector<std::string>& faces) { /* ... Implementacja jak poprzednio ... */
+unsigned int loadCubemap(const std::vector<std::string>& faces) {
     unsigned int textureID_cubemap;
     glGenTextures(1, &textureID_cubemap);
     glBindTexture(GL_TEXTURE_CUBE_MAP, textureID_cubemap);
@@ -48,10 +66,10 @@ unsigned int loadCubemap(const std::vector<std::string>& faces) { /* ... Impleme
             else if (nrChannels == 3) format = GL_RGB;
             else if (nrChannels == 1) format = GL_RED;
             else { std::cout << "[Cubemap Load] WARN: Unsupported #channels: " << nrChannels << " for " << faces[i] << std::endl; stbi_image_free(data); continue; }
-            GLenum internalFormat = (nrChannels == 4) ? GL_SRGB_ALPHA : GL_SRGB;
-            if (nrChannels == 1) internalFormat = GL_RED;
+            GLenum internalFormat = (nrChannels == 4) ? GL_SRGB_ALPHA : GL_SRGB; // UÅ¼yj sRGB dla lepszych kolorÃ³w
+            if (nrChannels == 1) internalFormat = GL_RED; // JeÅ›li tylko jeden kanaÅ‚, to RED
             glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-            std::cout << "[Cubemap Load] SUCCESS: Loaded texture " << faces[i] << std::endl;
+            // std::cout << "[Cubemap Load] SUCCESS: Loaded texture " << faces[i] << std::endl;
             stbi_image_free(data);
         }
         else {
@@ -61,38 +79,120 @@ unsigned int loadCubemap(const std::vector<std::string>& faces) { /* ... Impleme
             return 0;
         }
     }
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); // Lepsze filtrowanie
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+    glGenerateMipmap(GL_TEXTURE_CUBE_MAP); // Generuj mipmapy dla skyboxa
     return textureID_cubemap;
+}
+
+// Funkcja pomocnicza do generowania losowej liczby float w zakresie
+float randomFloat(float min, float max) {
+    return min + static_cast<float>(rand()) / (static_cast<float>(RAND_MAX / (max - min)));
+}
+
+void createNewPlatform() {
+    float new_x;
+    float new_y_offset;
+    glm::vec3 new_dimensions;
+
+    if (platforms_deque.empty()) {
+        new_x = 0.0f; // Pierwsza platforma
+        last_platform_y = BASE_PLATFORM_Y + MIN_PLATFORM_HEIGHT / 2.0f; // Ustaw wysokoÅ›Ä‡ pierwszej platformy
+        new_dimensions = glm::vec3(randomFloat(MIN_PLATFORM_WIDTH, MAX_PLATFORM_WIDTH), 
+                                   MIN_PLATFORM_HEIGHT, // Pierwsza platforma o minimalnej wysokoÅ›ci
+                                   randomFloat(MIN_PLATFORM_WIDTH, MAX_PLATFORM_WIDTH)); // GÅ‚Ä™bokoÅ›Ä‡ Z
+    } else {
+        Platform* lastPtf = platforms_deque.back();
+        new_x = lastPtf->getPosition().x + lastPtf->getSize().x / 2.0f + // Koniec ostatniej platformy
+                randomFloat(MIN_PLATFORM_SPACING_X, MAX_PLATFORM_SPACING_X); // OdstÄ™p
+        
+        new_y_offset = randomFloat(MIN_PLATFORM_HEIGHT_DIFFERENCE, MAX_PLATFORM_HEIGHT_DIFFERENCE);
+        // Ogranicz zmianÄ™ wysokoÅ›ci, aby nie byÅ‚o zbyt duÅ¼ych skokÃ³w
+        float proposed_y = last_platform_y + new_y_offset;
+        last_platform_y = glm::clamp(proposed_y, BASE_PLATFORM_Y - 5.0f, BASE_PLATFORM_Y + 15.0f); // Ograniczenie Y
+
+        new_dimensions = glm::vec3(randomFloat(MIN_PLATFORM_WIDTH, MAX_PLATFORM_WIDTH), 
+                                   randomFloat(MIN_PLATFORM_HEIGHT, MAX_PLATFORM_HEIGHT),
+                                   randomFloat(MIN_PLATFORM_WIDTH, MAX_PLATFORM_WIDTH)); // GÅ‚Ä™bokoÅ›Ä‡ Z
+        new_x += new_dimensions.x / 2.0f; // Dodaj poÅ‚owÄ™ szerokoÅ›ci nowej platformy
+    }
+    
+    // Pozycja Y platformy to jej Å›rodek, wiÄ™c dodajemy poÅ‚owÄ™ jej wysokoÅ›ci do `last_platform_y`
+    // ktÃ³re jest interpretowane jako gÃ³rna powierzchnia poprzedniej platformy lub base_y.
+    // Ale Platform konstruktor oczekuje Å›rodka, wiÄ™c `last_platform_y` powinno byÄ‡ Å›rodkiem.
+    // UproÅ›Ä‡my: `last_platform_y` bÄ™dzie Å›rodkiem Y ostatniej platformy.
+    // Nowa platforma bÄ™dzie miaÅ‚a Å›rodek Y = last_platform_y (Å›rodek poprzedniej) + new_y_offset.
+    // A jej podstawa bÄ™dzie na last_platform_y + new_y_offset - new_dimensions.y / 2.0f.
+    // Upewnijmy siÄ™, Å¼e podstawa nie jest za nisko.
+    float platform_center_y = last_platform_y + new_y_offset;
+    if (platform_center_y - new_dimensions.y / 2.0f < BASE_PLATFORM_Y - 10.0f) { // Nie pozwÃ³l spaÅ›Ä‡ za nisko
+        platform_center_y = BASE_PLATFORM_Y - 10.0f + new_dimensions.y / 2.0f;
+    }
+    last_platform_y = platform_center_y; // Zapisz Å›rodek Y nowej platformy
+
+
+    platforms_deque.push_back(new Platform(glm::vec3(new_x, platform_center_y, 0.0f), new_dimensions));
+    last_platform_x = new_x + new_dimensions.x / 2.0f; // Zapisz prawÄ… krawÄ™dÅº nowej platformy
+    // std::cout << "[Platform Gen] Created new platform at X: " << new_x 
+    //           << " Y: " << platform_center_y 
+    //           << " W: " << new_dimensions.x << " H: " << new_dimensions.y << std::endl;
+}
+
+
+void managePlatforms() {
+    if (!player) return;
+    glm::vec3 playerPos = player->getPosition();
+
+    // 1. Generowanie nowych platform, jeÅ›li gracz zbliÅ¼a siÄ™ do prawej krawÄ™dzi widoku
+    while (platforms_deque.empty() || last_platform_x < playerPos.x + PLATFORM_VIEW_DISTANCE_POSITIVE_X) {
+        createNewPlatform();
+    }
+
+    // 2. Usuwanie starych platform, ktÃ³re sÄ… daleko za graczem (po lewej)
+    while (!platforms_deque.empty()) {
+        Platform* firstPtf = platforms_deque.front();
+        // Usuwamy platformÄ™, jeÅ›li jej prawa krawÄ™dÅº jest daleko za lewÄ… krawÄ™dziÄ… widoku gracza
+        if (firstPtf->getPosition().x + firstPtf->getSize().x / 2.0f < playerPos.x + PLATFORM_REMOVAL_DISTANCE_NEGATIVE_X) {
+            // std::cout << "[Platform Rem] Removing platform at X: " << firstPtf->getPosition().x << std::endl;
+            delete firstPtf;
+            platforms_deque.pop_front();
+        } else {
+            break; // Pierwsza platforma jest wciÄ…Å¼ widoczna, wiÄ™c nie usuwamy dalej
+        }
+    }
 }
 
 
 int main()
 {
+    std::srand(static_cast<unsigned int>(std::time(nullptr))); // Inicjalizacja generatora liczb losowych
+
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_SAMPLES, 4); // Antialiasing
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Skakanie po dachach vNEW", NULL, NULL);
-    if (window == NULL) { /* ... */ return -1; }
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Matrix Skakanie v2", NULL, NULL);
+    if (window == NULL) { std::cerr << "Failed to create GLFW window" << std::endl; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
 
-    if (glewInit() != GLEW_OK) { /* ... */ return -1; }
+    if (glewInit() != GLEW_OK) { std::cerr << "Failed to initialize GLEW" << std::endl; return -1; }
 
     glEnable(GL_DEPTH_TEST);
-    std::cout << "OpenGL Version: " << glGetString(GL_VERSION) << std::endl;
+    glEnable(GL_MULTISAMPLE); // WÅ‚Ä…cz multisampling dla antialiasingu
+    glEnable(GL_CULL_FACE); // Optymalizacja: nie rysuj tylnych Å›cian
+    // std::cout << "OpenGL Version: " << glGetString(GL_VERSION) << std::endl;
 
     Shader shader("shaders/basic.vert", "shaders/basic.frag");
-    if (shader.ID == 0) { /* ... */ return -1; }
+    if (shader.ID == 0) { return -1; }
     Shader skyboxShader("shaders/skybox.vert", "shaders/skybox.frag");
-    if (skyboxShader.ID == 0) { /* ... */ return -1; }
+    if (skyboxShader.ID == 0) { return -1; }
 
-    float skyboxVertices[] = { /* ... (jak poprzednio) ... */
+    float skyboxVertices[] = { 
         -1.0f,  1.0f, -1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f,
         -1.0f, -1.0f,  1.0f, -1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
          1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f, -1.0f,
@@ -106,7 +206,7 @@ int main()
     glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glBindVertexArray(0);
 
-    std::vector<std::string> faces = { /* ... œcie¿ki do tekstur skyboxa ... */
+    std::vector<std::string> faces = { 
         "textures/skybox/right.jpg", "textures/skybox/left.jpg",
         "textures/skybox/top.jpg",   "textures/skybox/bottom.jpg",
         "textures/skybox/front.jpg", "textures/skybox/back.jpg"
@@ -114,69 +214,50 @@ int main()
     cubemapTextureID = loadCubemap(faces);
     if (cubemapTextureID == 0) { std::cerr << "Cubemap texture failed." << std::endl; }
     skyboxShader.use(); skyboxShader.setInt("skyboxTextureSampler", 0);
-
-    // Usuniêto ³adowanie buildingModel1 z pliku, bo platformy generuj¹ w³asn¹ geometriê
-
-    // --- Tworzenie platform z nowym konstruktorem Platform ---
-    // Definiujemy wymiary platformy (szerokoœæ X, wysokoœæ Y, g³êbokoœæ Z)
-    glm::vec3 platformDimensions = glm::vec3(2.0f, 15.0f, 2.0f); // <<<< DOSTOSUJ WYMIARY BUDYNKÓW
-    // Te wymiary bêd¹ u¿ywane w Platform::setupPlatformModel
-    // oraz zwracane przez Platform::getSize()
-
-// Pozycja Y podstawy (lub œrodka, zale¿nie od tego jak zdefiniujesz Platform::position)
-    float commonYPosition_platforms = platformDimensions.y / 2.0f; // Jeœli chcemy, aby podstawa platform by³a na Y=0
-    // to œrodek platformy musi byæ na Y = wysokoœæ/2
-    // Dostosuj, jeœli chcesz obni¿yæ/podnieœæ wszystkie
-// float commonYPosition_platforms = 0.0f; // Jeœli Platform::position to œrodek, a chcesz je na ziemi
-
-    float commonZPosition_platforms = 0.0f;
-    float spacingX = platformDimensions.x + 2.0f; // Odstêp = szerokoœæ platformy + trochê przerwy
-    // <<<< DOSTOSUJ spacingX
-
-    platforms.push_back(new Platform(glm::vec3(-1.5f * spacingX, commonYPosition_platforms, commonZPosition_platforms), platformDimensions));
-    platforms.push_back(new Platform(glm::vec3(-0.5f * spacingX, commonYPosition_platforms, commonZPosition_platforms), platformDimensions));
-    platforms.push_back(new Platform(glm::vec3(0.5f * spacingX, commonYPosition_platforms, commonZPosition_platforms), platformDimensions));
-    platforms.push_back(new Platform(glm::vec3(1.5f * spacingX, commonYPosition_platforms, commonZPosition_platforms), platformDimensions));
+    
+    // Inicjalne generowanie platform
+    for (int i = 0; i < INITIAL_PLATFORMS; ++i) {
+        createNewPlatform();
+    }
 
     player = new Player();
 
-    // Ustawienie pozycji startowej gracza na jednej z platform
-    int startPlatformIndex = 1;
-    if (platforms.size() > static_cast<size_t>(startPlatformIndex) && platforms[startPlatformIndex] != nullptr) {
-        Platform* startPlatform = platforms[startPlatformIndex];
-        glm::vec3 platformPos = startPlatform->getPosition(); // Œrodek Y platformy
-        glm::vec3 platformSize = startPlatform->getSize();    // = platformDimensions
+    if (!platforms_deque.empty()) {
+        Platform* startPlatform = platforms_deque.front();
+        glm::vec3 platformPos = startPlatform->getPosition(); 
+        glm::vec3 platformSize = startPlatform->getSize();    
         glm::vec3 playerSize = player->getSize();
-
-        float playerCenterY_start = (platformPos.y + platformSize.y / 2.0f) + (playerSize.y / 2.0f);
+        float playerCenterY_start = (platformPos.y + platformSize.y / 2.0f) + (playerSize.y / 2.0f) + 0.1f; // +0.1f dla pewnoÅ›ci
         player->SetFullPosition(glm::vec3(platformPos.x, playerCenterY_start, platformPos.z));
-        std::cout << "[Main] Player starting. PlatformCenter_Y: " << platformPos.y
-            << ", PlatformTop_Y: " << platformPos.y + platformSize.y / 2.0f
-            << ", Player_TargetCenter_Y: " << playerCenterY_start
-            << std::endl;
-    }
-    else {
-        player->SetFullPosition(glm::vec3(0.0f, player->getSize().y / 2.0f, 0.0f));
+        player->setIsGrounded(true); // Gracz startuje na platformie
+    } else { // Fallback, jeÅ›li nie ma platform
+        player->SetFullPosition(glm::vec3(0.0f, player->getSize().y / 2.0f + 5.0f, 0.0f));
     }
 
-    glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 500.0f);
-    std::cout << std::fixed << std::setprecision(2);
+
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 1000.0f); // ZwiÄ™kszony far plane
+    // std::cout << std::fixed << std::setprecision(2);
 
     while (!glfwWindowShouldClose(window)) {
-        // ... (deltaTime, processInput, glClear - bez zmian) ...
         float currentFrame = static_cast<float>(glfwGetTime());
         float deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
-        if (deltaTime > 0.1f) deltaTime = 0.1f;
-        if (deltaTime <= 0.0f) deltaTime = 1.0f / 120.0f;
+        if (deltaTime > 0.1f) deltaTime = 0.1f; // Ograniczenie deltaTime
+        if (deltaTime <= 0.0f) deltaTime = 1.0f / 120.0f; // Minimalny deltaTime
+
         processInput(window, deltaTime);
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        
+        player->Update(deltaTime);
+        gameLogicAndCollisions(deltaTime); // Logika gry i kolizji
+        managePlatforms(); // ZarzÄ…dzanie platformami
+
+        glClearColor(0.05f, 0.05f, 0.1f, 1.0f); // Ciemniejsze tÅ‚o
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glm::vec3 cameraOffset = glm::vec3(0.0f, 6.0f, 18.0f);
+        glm::vec3 cameraOffset = glm::vec3(0.0f, 7.0f, 20.0f); // Kamera nieco wyÅ¼ej i dalej
         glm::vec3 currentPlayerPosition = player ? player->getPosition() : glm::vec3(0.0f);
         glm::vec3 cameraPosition = currentPlayerPosition + cameraOffset;
-        glm::vec3 cameraTarget = currentPlayerPosition + glm::vec3(0.0f, 0.8f, 0.0f);
+        glm::vec3 cameraTarget = currentPlayerPosition + glm::vec3(0.0f, 1.0f, 0.0f); // Cel kamery nieco wyÅ¼ej niÅ¼ stopy gracza
         glm::mat4 view = glm::lookAt(cameraPosition, cameraTarget, glm::vec3(0.0f, 1.0f, 0.0f));
 
         shader.use();
@@ -184,85 +265,26 @@ int main()
         shader.setMat4("view", view);
         shader.setVec3("viewPos", cameraPosition);
         shader.setVec3("light.position", globalLightPosition);
-        shader.setVec3("light.ambient", glm::vec3(0.35f));
-        shader.setVec3("light.diffuse", glm::vec3(0.75f));
-        shader.setVec3("light.specular", glm::vec3(0.5f));
-        shader.setFloat("material_shininess", 32.0f);
+        shader.setVec3("light.ambient", glm::vec3(0.4f)); // Nieco jaÅ›niejsze Å›wiatÅ‚o otoczenia
+        shader.setVec3("light.diffuse", glm::vec3(0.8f));
+        shader.setVec3("light.specular", glm::vec3(0.6f));
+        shader.setFloat("material_shininess", 64.0f); // WiÄ™kszy poÅ‚ysk
 
-        shader.setVec3("objectColor", glm::vec3(0.5f, 0.55f, 0.6f)); // Kolor dla platform
-        for (auto& platform_ptr : platforms) {
+        // Kolor dla platform - moÅ¼na by go zmieniaÄ‡ losowo lub na podstawie odlegÅ‚oÅ›ci
+        shader.setVec3("objectColor", glm::vec3(0.2f, 0.25f, 0.3f)); 
+        for (auto& platform_ptr : platforms_deque) { // Iteruj po deque
             if (platform_ptr) platform_ptr->Draw(shader);
         }
 
         if (player) {
-            player->Update(deltaTime);
-
-            // W main.cpp, w pêtli while
-             // ... (po player->Update(deltaTime);) ...
-            bool onAnyPlatform = false;
-            if (player) { // Upewnij siê, ¿e player nie jest nullptr
-                for (auto& ptf : platforms) {
-                    if (ptf) {
-                        glm::vec3 playerPos = player->getPosition();
-                        glm::vec3 playerSize = player->getSize();
-                        glm::vec3 platformPos = ptf->getPosition();
-                        glm::vec3 platformSize = ptf->getSize();
-
-                        float playerFeetWorldY = playerPos.y - playerSize.y / 2.0f;
-                        float platformTopWorldY = platformPos.y + platformSize.y / 2.0f;
-
-                        bool collisionX = (playerPos.x - playerSize.x / 2.0f < platformPos.x + platformSize.x / 2.0f) &&
-                            (playerPos.x + playerSize.x / 2.0f > platformPos.x - platformSize.x / 2.0f);
-                        bool collisionZ = (playerPos.z - playerSize.z / 2.0f < platformPos.z + platformSize.z / 2.0f) &&
-                            (playerPos.z + playerSize.z / 2.0f > platformPos.z - platformSize.z / 2.0f);
-
-
-                        if (ptf == platforms[startPlatformIndex]) { // Loguj np. tylko dla platformy startowej
-                             std::cout << std::fixed << std::setprecision(3)
-                                       << "P_Y: " << playerPos.y << " P_FeetY: " << playerFeetWorldY << " P_VelY: " << player->getVelocity().y
-                                       << " | Plat_Y: " << platformPos.y << " Plat_TopY: " << platformTopWorldY
-                                       << " | PSizeY: " << playerSize.y << " PlatSizeY: " << platformSize.y
-                                       << " | OverlapXZ: " << (collisionX ? "T" : "F") << (collisionZ ? "T" : "F")
-                                       << std::endl;
-                        }
-
-                        if (collisionX && collisionZ) {
-                            float landingPrecision = 0.15f;
-                            float passThroughBuffer = 0.05f;  // Zmniejszy³em ten bufor, aby byæ bardziej precyzyjnym
-
-                            // Gracz spada lub prawie stoi (ma³a prêdkoœæ pionowa LUB jest ju¿ bardzo blisko góry platformy)
-                            // ORAZ jego stopy s¹ "w kontakcie" z górn¹ powierzchni¹ platformy (z marginesami)
-                            if (player->getVelocity().y <= 0.01f &&  // Gracz spada lub prawie nie ma prêdkoœci pionowej
-                                playerFeetWorldY >= platformTopWorldY - landingPrecision &&
-                                playerFeetWorldY <= platformTopWorldY + (std::abs(player->getVelocity().y * deltaTime) + passThroughBuffer))
-                            {
-                                std::cout << "======= LANDED on Platform! =======" << std::endl; // WA¯NE: SprawdŸ, czy ten log siê pojawia
-                                player->setPositionY(platformTopWorldY + playerSize.y / 2.0f);
-                                player->setVelocityY(0.0f);    // ZERUJEMY PRÊDKOŒÆ Y
-                                player->setIsJumping(false);   // USTAWIAMY, ¯E NIE SKACZE
-                                onAnyPlatform = true;
-                                break;
-                            }
-                        }
-                    }
-                } // koniec if (ptf)
-
-                // Jeœli gracz nie jest na ¿adnej platformie po sprawdzeniu wszystkich,
-                // a wczeœniej nie skaka³ (np. spad³ z krawêdzi), upewnij siê, ¿e grawitacja zadzia³a.
-                // Warunek `if (isJumping || velocity.y < 0)` w Player::Update powinien to obs³u¿yæ.
-                // Mo¿na by tu ewentualnie ustawiæ player->setIsJumping(true), jeœli nie onAnyPlatform i velocity.y < 0,
-                // aby zapobiec skokowi od razu po spadniêciu, ale to mo¿e byæ myl¹ce.
-
-            } // koniec pêtli po platformach
-            // ... (rysowanie gracza) ...
-            shader.setVec3("objectColor", glm::vec3(0.9f, 0.2f, 0.2f));
+            shader.setVec3("objectColor", glm::vec3(0.8f, 0.1f, 0.1f)); // Czerwony gracz
             player->Draw(shader);
         }
 
-        if (cubemapTextureID != 0) { /* ... rysowanie skyboxa bez zmian ... */
-            glDepthFunc(GL_LEQUAL);
+        if (cubemapTextureID != 0) { 
+            glDepthFunc(GL_LEQUAL); // ZmieÅ„ funkcjÄ™ gÅ‚Ä™bi dla skyboxa
             skyboxShader.use();
-            glm::mat4 viewSky = glm::mat4(glm::mat3(view));
+            glm::mat4 viewSky = glm::mat4(glm::mat3(view)); // UsuÅ„ translacjÄ™ z macierzy widoku
             skyboxShader.setMat4("view", viewSky);
             skyboxShader.setMat4("projection", projection);
             glBindVertexArray(skyboxVAO);
@@ -270,42 +292,74 @@ int main()
             glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTextureID);
             glDrawArrays(GL_TRIANGLES, 0, 36);
             glBindVertexArray(0);
-            glDepthFunc(GL_LESS);
+            glDepthFunc(GL_LESS); // PrzywrÃ³Ä‡ domyÅ›lnÄ… funkcjÄ™ gÅ‚Ä™bi
         }
 
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
-    // --- Zwalnianie zasobów ---
     glDeleteVertexArrays(1, &skyboxVAO); glDeleteBuffers(1, &skyboxVBO);
     if (cubemapTextureID != 0) glDeleteTextures(1, &cubemapTextureID);
     delete player; player = nullptr;
-    for (auto& platform_ptr : platforms) { delete platform_ptr; }
-    platforms.clear();
-    // Usuniêto delete buildingModel1, bo nie jest ju¿ ³adowany jako osobny zasób,
-    // platformy s¹ samowystarczalne. Jeœli Model.h/cpp s¹ nadal w projekcie,
-    // a nie tworzysz obiektów Model, to nie ma czego usuwaæ.
-    // Jeœli jednak buildingModel1 by³o u¿ywane do czegoœ innego, przywróæ.
-    // W tym kodzie, buildingModel1 nie jest ju¿ potrzebny, bo Platform tworzy w³asn¹ geometriê.
-    // Zmieni³em kod tak, aby Platformy nie potrzebowa³y Model*.
-
+    for (auto& platform_ptr : platforms_deque) { delete platform_ptr; } // UsuÅ„ platformy z deque
+    platforms_deque.clear();
+    
     glfwTerminate();
     return 0;
 }
 
-// --- Definicje Funkcji Pomocniczych ---
-void processInput(GLFWwindow* window, float deltaTime) { /* ... implementacja jak poprzednio ... */
+void processInput(GLFWwindow* window, float deltaTime) { 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, true);
     if (player) {
         if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) player->Jump();
-        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) player->MoveLeft(deltaTime);
-        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) player->MoveRight(deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) player->MoveLeft(deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) player->MoveRight(deltaTime);
     }
 }
-bool checkCollision(glm::vec3 pos1, glm::vec3 size1, glm::vec3 pos2, glm::vec3 size2) { /* ... implementacja jak poprzednio ... */
-    bool cX = (pos1.x - size1.x / 2.0f < pos2.x + size2.x / 2.0f) && (pos1.x + size1.x / 2.0f > pos2.x - size2.x / 2.0f);
-    bool cY = (pos1.y - size1.y / 2.0f < pos2.y + size2.y / 2.0f) && (pos1.y + size1.y / 2.0f > pos2.y - size2.y / 2.0f);
-    bool cZ = (pos1.z - size1.z / 2.0f < pos2.z + size2.z / 2.0f) && (pos1.z + size1.z / 2.0f > pos2.z - size2.z / 2.0f);
-    return cX && cY && cZ;
+
+void gameLogicAndCollisions(float deltaTime) {
+    if (!player) return;
+
+    bool onAnyPlatformThisFrame = false;
+    glm::vec3 playerPos = player->getPosition(); 
+    glm::vec3 playerSize = player->getSize(); 
+    float playerFeetWorldY = playerPos.y - playerSize.y / 2.0f; 
+
+    for (auto& ptf : platforms_deque) { // Iteruj po deque
+        if (!ptf) continue;
+
+        glm::vec3 platformPos = ptf->getPosition(); 
+        glm::vec3 platformSize = ptf->getSize(); 
+        float platformTopWorldY = platformPos.y + platformSize.y / 2.0f; 
+
+        bool collisionX = (playerPos.x - playerSize.x / 2.0f < platformPos.x + platformSize.x / 2.0f) &&
+                          (playerPos.x + playerSize.x / 2.0f > platformPos.x - platformSize.x / 2.0f); 
+        bool collisionZ = (playerPos.z - playerSize.z / 2.0f < platformPos.z + platformSize.z / 2.0f) &&
+                          (playerPos.z + playerSize.z / 2.0f > platformPos.z - platformSize.z / 2.0f); 
+
+        if (collisionX && collisionZ) {
+            float landingPrecision = 0.18f; // ZwiÄ™kszony margines na lÄ…dowanie, aby byÅ‚o Å‚atwiej
+            
+            // Gracz lÄ…duje, jeÅ›li spada (velocity.y <= 0)
+            // i jego stopy sÄ… BARDZO blisko gÃ³rnej powierzchni platformy
+            // (lub minimalnie jÄ… przeniknÄ™Å‚y z powodu kroku czasowego)
+            if (player->getVelocity().y <= 0.01f && // Gracz spada lub prawie stoi
+                playerFeetWorldY >= platformTopWorldY - landingPrecision &&
+                playerFeetWorldY <= platformTopWorldY + (std::abs(player->getVelocity().y * deltaTime) + 0.02f)) // MaÅ‚y bufor na przenikanie
+            {
+                // std::cout << "======= LANDED on Platform! PlayerFeetY: " << playerFeetWorldY << " PlatformTopY: " << platformTopWorldY << " VelY: " << player->getVelocity().y << " =======" << std::endl;
+                player->setPositionY(platformTopWorldY + playerSize.y / 2.0f); 
+                player->setVelocityY(0.0f);    
+                player->setIsGrounded(true);  
+                onAnyPlatformThisFrame = true;
+                break; 
+            }
+        }
+    }
+
+    if (!onAnyPlatformThisFrame && player->getIsGrounded() && player->getVelocity().y <= 0) {
+        // std::cout << "======= Player is falling off a platform! =======" << std::endl;
+        player->setIsGrounded(false); 
+    }
 }

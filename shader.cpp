@@ -3,7 +3,7 @@
 #include <sstream>
 #include <iostream>
 
-Shader::Shader() : ID(0) {} // Domyœlny konstruktor
+Shader::Shader() : ID(0) {} 
 
 Shader::Shader(const char* vertexPath, const char* fragmentPath) : ID(0) {
     loadFromFile(vertexPath, fragmentPath);

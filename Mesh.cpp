@@ -1,30 +1,19 @@
 #include "Mesh.h"
 #include <iostream> 
 
-// G³ówny konstruktor
 Mesh::Mesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices, const std::vector<Texture>& textures) {
     this->vertices = vertices;
     this->indices = indices;
-    this->textures = textures; // Przypisz przekazane tekstury
+    this->textures = textures; 
     setupMesh();
 }
-
-/* // Jeœli chcesz mieæ osobny konstruktor dla siatek bez tekstur (mo¿na go pomin¹æ i przekazywaæ pusty wektor textures)
-Mesh::Mesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices) {
-    this->vertices = vertices;
-    this->indices = indices;
-    // this->textures pozostaje puste
-    setupMesh();
-}
-*/
 
 void Mesh::Draw(Shader& shader) {
     unsigned int diffuseNr = 1;
     unsigned int specularNr = 1;
-    unsigned int normalNr = 1; // Dla normal map, jeœli dodasz
-    unsigned int heightNr = 1; // Dla height map, jeœli dodasz
+    unsigned int normalNr = 1; 
+    unsigned int heightNr = 1; 
 
-    // Bindowanie tekstur tylko jeœli siatka je posiada
     if (!textures.empty()) {
         for (unsigned int i = 0; i < textures.size(); i++) {
             glActiveTexture(GL_TEXTURE0 + i);
@@ -40,18 +29,15 @@ void Mesh::Draw(Shader& shader) {
             else if (name == "texture_height")
                 number = std::to_string(heightNr++);
 
-            // Ustaw sampler w shaderze na odpowiedni¹ jednostkê tekstury
-            shader.setInt((name + number).c_str(), i); // np. "texture_diffuse1" = 0, "texture_specular1" = 1
+            shader.setInt((name + number).c_str(), i); 
             glBindTexture(GL_TEXTURE_2D, textures[i].id);
         }
     }
 
-    // Rysuj siatkê
     glBindVertexArray(VAO);
     glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
 
-    // Zresetuj aktywn¹ jednostkê tekstury do domyœlnej po narysowaniu
     glActiveTexture(GL_TEXTURE0);
 }
 
@@ -67,13 +53,10 @@ void Mesh::setupMesh() {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
 
-    // Pozycje wierzcho³ków (location = 0)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Position));
-    // Normalne wierzcho³ków (location = 1)
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
-    // Wspó³rzêdne tekstur (location = 2)
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
 
